@@ -81,7 +81,7 @@ def main():
 
     if len(sys.argv) != 2:
         print('Usage: hfe2rdi <file.hfe>')
-        exit()
+        sys.exit()
 
     src_file = sys.argv[1]
     dst_file = os.path.splitext(sys.argv[1])[0] + '.rdi'
@@ -93,19 +93,19 @@ def main():
 
     if hfe[:8] != b'HXCPICFE':
         print(f'{src_file}: Not a HFE file!')
-        exit(1)
+        sys.exit(1)
 
     rev = hfe[8]
     if rev != 0:
         print(f'{src_file}: Unknown file format!')
-        exit(1)
+        sys.exit(1)
 
     tracks = hfe[9]
     sides = hfe[10]
 
     if tracks != 80 or sides != 2:
         print(f'{src_file}: Not an RDI file!')
-        exit(1)
+        sys.exit(1)
 
     bitrate = hfe[12] + (hfe[13] << 8)
 
@@ -115,7 +115,7 @@ def main():
         bit_len = 4
     else:
         print(f'{src_file}: Unsupported bitrate {bitrate * 1000}!')
-        exit(1)
+        sys.exit(1)
 
     lut_offset = (hfe[18] + (hfe[19] << 8)) * 512
 
@@ -129,7 +129,7 @@ def main():
             track_len = hfe[lut_offset + track * 4 + 2] + (hfe[lut_offset + track * 4 + 3] << 8)
             if track_len < 6250 * bit_len:
                 print(f'{src_file}: Invalid track {track} length!')
-                exit(1)
+                sys.exit(1)
 
             for side in range(2):
                 decoder.new_track()

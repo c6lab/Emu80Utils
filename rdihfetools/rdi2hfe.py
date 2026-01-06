@@ -104,7 +104,7 @@ def main():
 
     if len(sys.argv) != 2:
         print('Usage: rdi2hfe <file.rdi>')
-        exit()
+        sys.exit()
 
     src_file = sys.argv[1]
     dst_file = os.path.splitext(sys.argv[1])[0] + '.hfe'
