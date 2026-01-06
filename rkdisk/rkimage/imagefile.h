@@ -36,7 +36,7 @@ enum ImageFileException {
 class ImageFile
 {
 public:
-    ImageFile(const std::string& fileName, ImageFileMode mode, int imageSize = 0);
+    ImageFile(const std::string& fileName, ImageFileMode mode, size_t imageSize);
     ~ImageFile();
 
     bool isOpen();

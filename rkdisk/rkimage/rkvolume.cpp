@@ -27,7 +27,8 @@
 using namespace std;
 
 
-RkVolume::RkVolume(const std::string& fileName, ImageFileMode mode) : Volume(fileName, mode, mode == IFM_WRITE_CREATE ? 500000 : 0)
+//RkVolume::RkVolume(const std::string& fileName, ImageFileMode mode) : Volume(fileName, mode, mode == IFM_WRITE_CREATE ? RK_IMAGESIZE : 0)
+RkVolume::RkVolume(const std::string& fileName, ImageFileMode mode) : Volume(fileName, mode, RK_IMAGESIZE)
 {
 }
 
@@ -37,7 +38,7 @@ bool RkVolume::isValid()
     if (!m_image)
         return false;
 
-    if (m_image->getSize() != 500000)
+    if (m_image->getSize() != RK_IMAGESIZE)
         return false;
 
     // check file structure here
@@ -72,43 +73,44 @@ void RkVolume::readDisk()
 
 void RkVolume::readSectors()
 {
-    for (int t = 0; t < 160; t++) {
-        uint8_t* trackData = m_image->getData() + t * 3125;
+    for (int t = 0; t < RK_TRACKCNT; t++) {
+        uint8_t* trackData = m_image->getData() + t * RK_BYTESTRK;
 
         int pos = 0;
         int nSectorsFound = 0;
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < RK_SECTTRCNT; i++)
             m_sectors[t][i].dirty = true;
 
-        while (pos < 3125 && nSectorsFound < 5) {
+        while (pos < RK_BYTESTRK && nSectorsFound < RK_SECTTRCNT) {
             // find syncrobyte
-            while (pos < 3125 && trackData[pos] != 0x06)
+            while (pos < RK_BYTESTRK && trackData[pos] != 0x06)
                 pos++;
 
             // find address mark
-            while (pos < 3125 - 3 && trackData[pos] != 0xEA && trackData[pos + 1] != 0xD3)
+            while (pos < RK_BYTESTRK - 3 && trackData[pos] != 0xEA && trackData[pos + 1] != 0xD3)
                 pos++;
             pos += 2;
 
-            if (pos >= 3125 - 2)
-                throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT};
+            //if (pos >= RK_BYTESTRK - 2)
+            //    throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT, t, 11};
 
             int nTrack = trackData[pos++];
             int nSect = trackData[pos++];
             if (nTrack != t)
-                throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT};
+                //throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT, t, 12};
+                continue;
 
             // find synchrobyte
-            while (pos < 3125 && trackData[pos] != 0x06)
+            while (pos < RK_BYTESTRK && trackData[pos] != 0x06)
                 pos++;
 
             // find data mark
-            while (pos < 3125 - 3 && trackData[pos] != 0xDD && trackData[pos + 1] != 0xF3)
+            while (pos < RK_BYTESTRK - 3 && trackData[pos] != 0xDD && trackData[pos + 1] != 0xF3)
                 pos++;
             pos += 2;
 
-            if (pos >= 3125 - 519)
-                throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT};
+            //if (pos >= RK_BYTESTRK - 519)
+            //    throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT, nTrack, nSect};
 
             int sectLen = trackData[pos] + (trackData[pos + 1] << 8);
             pos += 3;
@@ -119,13 +121,14 @@ void RkVolume::readSectors()
 
             nSectorsFound++;
 
-            pos += 530;
+            //pos += 530;
+            pos += (sectLen + 18);
         }
         bool allSect = true;
-        for (int i = 0; i < 5; i++)
+        for (int i = 0; i < RK_SECTTRCNT; i++)
             allSect = allSect || m_sectors[t][i].dirty;
         if (!allSect)
-            throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT}; // there are missings sectors on the track
+            throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT, 0, 13}; // there are missings sectors on the track
     }
 }
 
@@ -138,16 +141,16 @@ void RkVolume::readVtoc()
     if ((vtocPtr[32] & 3) != 3)
         throw RkVolumeException {RkVolumeException::RVET_NO_FILESYSTEM}; // there are missings sectors on the track
 
-    for (int t = 0; t < 160; t++) {
+    for (int t = 0; t < RK_TRACKCNT; t++) {
         int bt = vtocPtr[t];
-        for (int s = 0; s < 5; s++) {
+        for (int s = 0; s < RK_SECTTRCNT; s++) {
             m_sectors[t][s].allocated = bt & 1;
             allocated += bt & 1;
             bt >>= 1;
         }
     }
 
-    m_freeSectors = 800 - allocated;
+    m_freeSectors = RK_SECTCNT - allocated;
 }
 
 
@@ -169,7 +172,7 @@ void RkVolume::readDir()
 
         dirSectors++;
 
-        while (pos < 512 - 21 && sectorData[pos]) {
+        while (pos < RK_DATASECT - 21 && sectorData[pos]) {
             if (sectorData[pos] == 0xFF) {
                 pos += 21;
                 continue;
@@ -242,7 +245,7 @@ void RkVolume::calcSizes()
             t = ptr[0];
             s = ptr[1];
 
-            if (t >= 160 || s >= 5)
+            if (t >= RK_TRACKCNT || s >= RK_SECTTRCNT)
                 throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, t, s};
 
             int pos = 2;
@@ -250,7 +253,7 @@ void RkVolume::calcSizes()
                 int nextTrack = ptr[pos++];
                 int nextSector = ptr[pos++];
 
-                if (nextTrack >= 160 || nextSector >= 5)
+                if (nextTrack >= RK_TRACKCNT || nextSector >= RK_SECTTRCNT)
                     throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, nextTrack, nextSector};
 
                 if (nextTrack || nextSector)
@@ -285,7 +288,7 @@ int RkVolume::getFreeDirEntries()
 }
 
 
-uint8_t* RkVolume::readFile(std::string fileName, int& len)
+uint8_t* RkVolume::readFile(std::string fileName, int& len, uint16_t& start)
 {
     readDisk();
 
@@ -294,6 +297,8 @@ uint8_t* RkVolume::readFile(std::string fileName, int& len)
     auto fi = find_if(m_fileList.begin(), m_fileList.end(), [fileName](const auto& x) {return fileName == x.fileName;});
     if (fi != m_fileList.end()) {
         len = fi->fileSize;
+        start = fi->addr;
+        if (len == 0) return nullptr;
 
         int left = fi->fileSize;
         int bufPos = 0;
@@ -302,7 +307,7 @@ uint8_t* RkVolume::readFile(std::string fileName, int& len)
         int t = fi->tList;
         int s = fi->sList;
 
-        if (t >= 160 || s >= 5)
+        if (t >= RK_TRACKCNT || s >= RK_SECTTRCNT)
             throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, t, s};
 
         do {
@@ -312,7 +317,7 @@ uint8_t* RkVolume::readFile(std::string fileName, int& len)
             t = ptr[0];
             s = ptr[1];
 
-            if (t >= 160 || s >= 5)
+            if (t >= RK_TRACKCNT || s >= RK_SECTTRCNT)
                 throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, t, s};
 
             int tslistPos = 2;
@@ -320,7 +325,7 @@ uint8_t* RkVolume::readFile(std::string fileName, int& len)
                 int nextTrack = ptr[tslistPos++];
                 int nextSector = ptr[tslistPos++];
 
-                if (nextTrack >= 160 || nextSector >= 5)
+                if (nextTrack >= RK_TRACKCNT || nextSector >= RK_SECTTRCNT)
                     throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, nextTrack, nextSector};
 
                 if (nextTrack || nextSector) {
@@ -347,10 +352,10 @@ void RkVolume::allocateSector(int& track, int& sector)
     if (!m_freeSectors)
         throw RkVolumeException {RkVolumeException::RVET_DISK_FULL};
 
-    for (int t = 0; t < 160; t++)
-        for (int s = 0; s < 5; s++)
+    for (int t = 0; t < RK_TRACKCNT; t++)
+        for (int s = 0; s < RK_SECTTRCNT; s++)
             if (!m_sectors[t][s].allocated) {
-                memset(m_sectors[t][s].ptr, 0, 512);
+                memset(m_sectors[t][s].ptr, 0, RK_DATASECT);
                 track = t;
                 sector = s;
                 m_sectors[t][s].dirty = true;
@@ -370,7 +375,7 @@ void RkVolume::allocateSpecificSector(int track, int sector)
     if (!m_sectors[track][sector].allocated)
         --m_freeSectors;
 
-    memset(m_sectors[track][sector].ptr, 0, 512);
+    memset(m_sectors[track][sector].ptr, 0, RK_DATASECT);
     m_sectors[track][sector].dirty = true;
     m_sectors[track][sector].allocated = true;
     m_sectors[32][0].ptr[track] |= (1 << sector);
@@ -400,7 +405,7 @@ uint8_t* RkVolume::allocateDirEntry()
     do {
         int pos = 7;
 
-        while (pos < 512 - 21) {
+        while (pos < RK_DATASECT - 21) {
             if (sectorData[pos] == 0 || sectorData[pos] == 0xFF) {
                 m_sectors[track][sector].dirty = true;
                 return sectorData + pos;
@@ -411,7 +416,7 @@ uint8_t* RkVolume::allocateDirEntry()
         track = sectorData[0];
         sector = sectorData[1];
 
-        if (track >= 160 || sector >= 5)
+        if (track >= RK_TRACKCNT || sector >= RK_SECTTRCNT)
             throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, track, sector};
 
         sectorData = m_sectors[track][sector].ptr;
@@ -441,7 +446,7 @@ void RkVolume::writeFile(string fileName, uint8_t* data, int size, uint16_t addr
             throw RkVolumeException {RkVolumeException::RVET_FILE_EXISTS};
     }
 
-    int sectorsNeeded = (size + 511) / 512;
+    int sectorsNeeded = (size + 511) / RK_DATASECT;
     if (sectorsNeeded == 0)
         sectorsNeeded = 1;
     sectorsNeeded += (sectorsNeeded + 253) / 254;
@@ -490,11 +495,11 @@ void RkVolume::writeFile(string fileName, uint8_t* data, int size, uint16_t addr
 
         uint8_t* ptr = m_sectors[track][sector].ptr;
 
-        int bytesToCopy = left > 512 ? 512 : left;
+        int bytesToCopy = left > RK_DATASECT ? RK_DATASECT : left;
         memcpy(reinterpret_cast<char*>(ptr), data, bytesToCopy);
         m_sectors[track][sector].len = bytesToCopy;
-        if (bytesToCopy < 512)
-            memset(ptr + bytesToCopy, 0, 512 - bytesToCopy + 2); // + CS: 2 bytes
+        if (bytesToCopy < RK_DATASECT)
+            memset(ptr + bytesToCopy, 0, RK_DATASECT - bytesToCopy + 2); // + CS: 2 bytes
         data += bytesToCopy;
         left -= bytesToCopy;
 
@@ -554,14 +559,14 @@ void RkVolume::deleteFile(std::string fileName)
     int t = fi->tList;
     int s = fi->sList;
 
-    if (t >= 160 || s >= 5)
+    if (t >= RK_TRACKCNT || s >= RK_SECTTRCNT)
         throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, t, s};
 
     do {
         uint8_t* ptr = m_sectors[t][s].ptr;
         int sectorSize = m_sectors[t][s].len;
 
-        if (t >= 160 || s >= 5)
+        if (t >= RK_TRACKCNT || s >= RK_SECTTRCNT)
             throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, t, s};
 
         int tslistPos = 2;
@@ -569,7 +574,7 @@ void RkVolume::deleteFile(std::string fileName)
             int nextT = ptr[tslistPos++];
             int nextS = ptr[tslistPos++];
 
-            if (nextT >= 160 || nextS >= 5)
+            if (nextT >= RK_TRACKCNT || nextS >= RK_SECTTRCNT)
                 throw RkVolumeException {RkVolumeException::RVET_SECTOR_NOT_FOUND, nextT, nextS};
 
             if (nextT || nextS)
@@ -610,17 +615,17 @@ void RkVolume::setAttributes(std::string fileName, uint8_t attr)
 
 void RkVolume::format(int directorySize)
 {
-    if (m_image->getSize() != 500000)
+    if (m_image->getSize() != RK_IMAGESIZE)
         throw RkVolumeException {RkVolumeException::RVET_BAD_DISK_FORMAT};
 
-    const int c_sectorNums[5] = {0, 3, 1, 4, 2};
+    const int c_sectorNums[RK_SECTTRCNT] = {0, 3, 1, 4, 2};
 
-    for (int tr = 0; tr < 160; tr++) {
-        uint8_t* track = m_image->getData() + tr * 3125;
-        memset(track, 0, 586 * 5);
-        memset(track + 586 * 5, 0xFF, 3125 - 586 * 5);
+    for (int tr = 0; tr < RK_TRACKCNT; tr++) {
+        uint8_t* track = m_image->getData() + tr * RK_BYTESTRK;
+        memset(track, 0, 586 * RK_SECTTRCNT);
+        memset(track + 586 * RK_SECTTRCNT, 0xFF, RK_BYTESTRK - 586 * RK_SECTTRCNT);
 
-        for (int s = 0; s < 5; s++) {
+        for (int s = 0; s < RK_SECTTRCNT; s++) {
 
             uint8_t* ptr = track + 586 * s;
 
@@ -669,7 +674,7 @@ void RkVolume::format(int directorySize)
     readSectors();
 
     allocateSpecificSector(32, 0);
-    m_sectors[32][0].len = 160;
+    m_sectors[32][0].len = RK_TRACKCNT;
 
     for (int i = 1; i <= directorySize; i++) {
         int t = 32 + i / 5;
@@ -687,8 +692,8 @@ void RkVolume::format(int directorySize)
 
 void RkVolume::updateSectors()
 {
-    for (int t = 0; t < 160; t++)
-        for(int s = 0; s < 5; s++)
+    for (int t = 0; t < RK_TRACKCNT; t++)
+        for(int s = 0; s < RK_SECTTRCNT; s++)
             if (m_sectors[t][s].dirty) {
                 int len = m_sectors[t][s].len;
                 uint8_t* ptr = m_sectors[t][s].ptr;

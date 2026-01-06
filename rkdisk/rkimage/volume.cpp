@@ -21,7 +21,7 @@
 
 using namespace std;
 
-Volume::Volume(const string& fileName, ImageFileMode mode, int imageSize)
+Volume::Volume(const string& fileName, ImageFileMode mode, size_t imageSize)
 {
     m_image = new ImageFile(fileName, mode, imageSize);
 }

@@ -22,6 +22,15 @@
 
 #include "volume.h"
 
+
+#define RK_IMAGESIZE 500000
+#define RK_TRACKCNT  160
+#define RK_SECTTRCNT 5
+#define RK_SECTCNT   800
+#define RK_BYTESTRK  3125
+#define RK_DATASECT  512
+
+
 struct RkSector {
     uint8_t* ptr;
     uint16_t len;
@@ -72,7 +81,7 @@ public:
     int getFreeBlocks();
     int getFreeDirEntries();
 
-    uint8_t* readFile(std::string fileName, int& size);
+    uint8_t* readFile(std::string fileName, int& size, uint16_t& start);
     void writeFile(std::string fileName, uint8_t* data, int size, uint16_t addr = 0, uint8_t attr = 0, bool allowOverwrite = false);
     void deleteFile(std::string fileName);
     void setAttributes(std::string fileName, uint8_t attr);
@@ -81,7 +90,7 @@ public:
     void saveImage();
 
 private:
-    RkSector m_sectors[160][5];
+    RkSector m_sectors[RK_TRACKCNT][RK_SECTTRCNT];
     std::list<RkFileInfo> m_fileList;
 
     int m_freeSectors = 0;

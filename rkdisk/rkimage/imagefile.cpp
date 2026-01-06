@@ -25,9 +25,15 @@
 using namespace std;
 
 
-ImageFile::ImageFile(const string& fileName, ImageFileMode mode, int imageSize)
+ImageFile::ImageFile(const string& fileName, ImageFileMode mode, size_t imageSize)
 {
+    size_t file_size;
+
     m_mode = mode;
+    m_size = imageSize;
+    m_buf = new uint8_t[m_size];
+    memset(m_buf, 0, m_size);
+
     ios_base::openmode openMode;
     switch (mode) {
     case IFM_READ_ONLY:
@@ -48,20 +54,21 @@ ImageFile::ImageFile(const string& fileName, ImageFileMode mode, int imageSize)
     if (mode != IFM_WRITE_CREATE) {
         // open existing file
         m_file.seekg(0, ios::end);
-        m_size = m_file.tellg();
+        file_size = m_file.tellg();
         m_file.seekg(0, ios::beg);
-        m_buf = new uint8_t[m_size];
-        m_file.read((char*)(m_buf), m_size);
+        //m_buf = new uint8_t[m_size];
+        m_file.read((char*)(m_buf), (m_size < file_size)? m_size : file_size);
         if (m_file.rdstate()) {
             throw IFE_READ_ERROR;
             m_file.close();
         }
-    } else {
-        // create new file
-        m_buf = new uint8_t[imageSize];
-        m_size = imageSize;
-        memset(m_buf, 0, m_size);
     }
+    //else {
+    //    // create new file
+    //    m_buf = new uint8_t[imageSize];
+    //    m_size = imageSize;
+    //    memset(m_buf, 0, m_size);
+    //}
 }
 
 

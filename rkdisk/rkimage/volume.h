@@ -26,13 +26,13 @@
 class Volume
 {
 public:
-    Volume(const std::string& fileName, ImageFileMode mode, int imageSize = 0);
+    Volume(const std::string& fileName, ImageFileMode mode, size_t imageSize);
     ~Volume();
 
     virtual bool isValid() = 0;
 
 protected:
-    uint8_t* m_fileBuf = nullptr;
+    //uint8_t* m_fileBuf = nullptr;// не используется
     ImageFile* m_image = nullptr;
 };
 

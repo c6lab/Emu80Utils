@@ -22,6 +22,8 @@
 #include <iostream>
 #include <fstream>
 #include <iomanip>
+#include <vector>
+#include <string.h>
 
 #include "rkimage/rkvolume.h"
 
@@ -29,10 +31,132 @@
 #define VERSION "1.02"
 
 
+#pragma pack(push, 1)
+
+struct RkHeader {
+    uint8_t loadAddrHi;
+    uint8_t loadAddrLo;
+    uint8_t endAddrHi;
+    uint8_t endAddrLo;
+};
+
+struct RkFooter {
+    uint8_t nullByte1;
+    uint8_t nullByte2;
+    uint8_t syncByte;
+    uint8_t csHi;
+    uint8_t csLo;
+};
+
+#pragma pack(pop)
+
+
+#define CP_KOI8     0
+#define CP_WIN1251  1
+#define CP_UTF8     2
+#define CP_MAX_ID   2
+
+const uint16_t koi8_to[CP_MAX_ID][31] = {
+    {
+        // koi8 -> win1251
+        0xDE, 0xC0, 0xC1, 0xD6, 0xC4, 0xC5, 0xD4, 0xC3,
+        0xD5, 0xC8, 0xC9, 0xCA, 0xCB, 0xCC, 0xCD, 0xCE,
+        0xCF, 0xDF, 0xD0, 0xD1, 0xD2, 0xD3, 0xC6, 0xC2,
+        0xDC, 0xDB, 0xC7, 0xD8, 0xDD, 0xD9, 0xD7
+    }, {
+        // koi8 -> utf8
+        0xD0AE, 0xD090, 0xD091, 0xD0A6, 0xD094, 0xD095, 0xD0A4, 0xD093,
+        0xD0A5, 0xD098, 0xD099, 0xD09A, 0xD09B, 0xD09C, 0xD09D, 0xD09E,
+        0xD09F, 0xD0AF, 0xD0A0, 0xD0A1, 0xD0A2, 0xD0A3, 0xD096, 0xD092,
+        0xD0AC, 0xD0AB, 0xD097, 0xD0A8, 0xD0AD, 0xD0A9, 0xD0A7
+    }
+};
+
 using namespace std;
 
-void usage(const string& moduleName)
+
+bool strcmpi(const std::string& a, const char* b)
 {
+    return (strcasecmp(a.data(), b) == 0);
+}
+
+
+uint16_t addToRkCs(uint16_t baseCs, const uint8_t* data, int len, bool lastChunk = false)
+{
+    if (lastChunk)
+        --len;
+
+    for (int i = 0; i < len; i++) {
+        baseCs += data[i];
+        baseCs += (data[i] << 8);
+    }
+
+    if (lastChunk)
+        baseCs = (baseCs & 0xff00) | ((baseCs + data[len]) & 0xff);
+
+    return baseCs;
+}
+
+
+uint16_t calcRkCs(vector<uint8_t>& data)
+{
+    return addToRkCs(0, data.data(), data.size(), true);
+}
+
+
+bool convertToRk(vector<uint8_t> body, uint16_t loadAddr, const string& outputFile)
+{
+    int endAddr = loadAddr + body.size() - 1;
+
+    int headerSize = 0;
+    int footerSize = 0;
+
+    RkHeader header;
+    RkFooter footer;
+
+    const char* headerPtr = (const char*)&header;
+    const char* footerPtr = (const char*)&footer;
+
+    headerSize = sizeof(RkHeader);
+    header.loadAddrHi = loadAddr >> 8;
+    header.loadAddrLo = loadAddr & 0xFF;
+    header.endAddrHi = endAddr >> 8;
+    header.endAddrLo = endAddr & 0xFF;
+
+    uint16_t cs = calcRkCs(body);
+
+    footerSize = sizeof(RkFooter);
+    footer.nullByte1 = 0;
+    footer.nullByte2 = 0;
+    footer.syncByte = 0xE6;
+    footer.csHi = cs >> 8;
+    footer.csLo = cs & 0xFF;
+
+    ofstream f(outputFile, ofstream::binary);
+    if (f.fail())
+        return false;
+    f.write(headerPtr, headerSize);
+    f.write((const char*)(body.data()), body.size());
+    f.write(footerPtr, footerSize);
+    if (f.fail()) {
+        f.close();
+        return false;
+    }
+    f.close();
+
+    return true;
+}
+
+
+void showTitle(void)
+{
+    cout << "rkdisk v. " VERSION " (c) Viktor Pykhonin, 2024" << endl;
+    cout << "Cyberdyne Systems forked (c) GTU" << endl << endl;
+}
+
+void usage(const string& moduleName, bool showtitle = true)
+{
+            if (showtitle) showTitle();
             cout << "Usage: " << moduleName << " <command> [<options>...] <image_file.rdi> [<rk_file>] [<target_file>]" << endl << endl <<
                     "Commands:" << endl << endl <<
                     "    a   Add file to image" << endl <<
@@ -42,10 +166,13 @@ void usage(const string& moduleName)
                     "            -r      - set \"Read only\" attribute" << endl <<
                     "            -h      - set \"Hidden\" attribute" << endl <<
                     "    x   eXtract file from image" << endl <<
+                    "            -t      - tape (.rk) file pack" << endl <<
+                    "            -cp Cxx - codepage text encode (KOI8-R|CP1251|UTF-8)" << endl <<
                     "    d   Delete file from image" << endl <<
                     "    l   List files in image" << endl <<
                     "        options:" << endl <<
                     "            -b - Brief listing" << endl <<
+                    "            -b2 - True brief listing ;-)" << endl <<
                     "    f   Format or create new empty image" << endl <<
                     "        options:" << endl <<
                     "            -y      - don't ask to confirm" << endl <<
@@ -80,13 +207,27 @@ string makeRkDosFileName(const string& rkFileName)
 }
 
 
-void listFiles(const string& imageFileName, bool briefListing)
+void listFiles(const string& imageFileName, int briefMode)
 {
     RkVolume vol(imageFileName, IFM_READ_ONLY);
 
     auto fileList = vol.getFileList();
+    bool briefListing = (briefMode == 1)? true : false;
+    bool b2riefListing = (briefMode == 2)? true : false;
 
-    if (!briefListing) {
+    if (briefListing) {
+        int i = 0;
+        for (const auto& fi: *fileList) {
+            cout << left << setw(14) << setfill(' ') << fi.fileName << "\t";
+            if (++i % 5 == 0)
+                cout << endl;
+        }
+        cout << endl;
+    } else if (b2riefListing) {
+        for (const auto& fi: *fileList) {
+            cout << fi.fileName << endl;
+        }
+    } else {
         cout << "Name          " << "\t" << "Addr" << "\t" << "Blocks" << "\t" << "  Bytes" << "\t" << "  Attr" << endl;
         cout << "----          " << "\t" << "----" << "\t" << "------" << "\t" << "  -----" << "\t" << "  ----" << endl;
 
@@ -100,20 +241,15 @@ void listFiles(const string& imageFileName, bool briefListing)
                  << setw(7) << setfill(' ') << dec << fi.fileSize << "\t"
                  << setw(6) << attr << endl;
         }
-    } else {
-        int i = 0;
-        for (const auto& fi: *fileList) {
-            cout << left << setw(14) << setfill(' ') << fi.fileName << "\t";
-            if (++i % 5 == 0)
-                cout << endl;
-        }
-        cout << endl;
     }
-    cout << endl << fileList->size() << " file(s) total" << endl;
-    int freeBlocks = vol.getFreeBlocks();
-    int freeDirEntries = vol.getFreeDirEntries();
-    cout << endl << freeBlocks << " block(s) (" << freeBlocks * 512 << " bytes) free" << endl;
-    cout << freeDirEntries << " directory entries free" << endl;
+
+    if (!b2riefListing) {
+        cout << endl << fileList->size() << " file(s) total" << endl;
+        int freeBlocks = vol.getFreeBlocks();
+        int freeDirEntries = vol.getFreeDirEntries();
+        cout << endl << freeBlocks << " block(s) (" << freeBlocks * 512 << " bytes) free" << endl;
+        cout << freeDirEntries << " directory entries free" << endl;
+    }
 }
 
 
@@ -166,31 +302,74 @@ bool addFile(const string& imageFileName, const string& rkFileName, uint16_t add
     return true;
 }
 
-
-bool extractFile(const string& imageFileName, const string& rkFileName, const string& targetFileName)
+vector<uint8_t> decodeCP(const vector<uint8_t>& src, int codePage)
 {
-    ofstream rkFile(targetFileName, ios::binary | std::fstream::trunc);
-    if (!rkFile.is_open()) {
-        cout << "error opening file " << rkFileName << endl;
-        return false;
+    vector<uint8_t> dst;
+    uint16_t wch;
+    uint8_t ch;
+
+    for (unsigned i = 0; i < src.size(); i++) {
+        ch = src[i];
+        if (ch == 0x0d) {
+#if defined(WIN32) || defined(_WIN32) || defined(__WIN32__)
+            dst.push_back(ch);
+#endif
+            dst.push_back(0x0a);
+        } else {
+            if ((ch < 0x60) || (ch == 0x7f));
+            else if (ch < 0x7f) {
+                ch += 0x80;
+                if (codePage > CP_KOI8) {
+                    wch = koi8_to[codePage - 1][ch - 0xE0];
+                    ch = wch & 0xFF;
+                    if (wch & 0xFF00) dst.push_back((wch & 0xFF00) >> 8);
+                }
+            }
+            else if (ch == 0xff) continue; //ch = 0x1a;
+            dst.push_back(ch);
+        }
     }
 
+    return dst;
+}
+
+bool extractFile(const string& imageFileName, const string& rkFileName, const string& targetFileName, bool extractToTape, int codePage)
+{
     RkVolume vol(imageFileName, IFM_READ_ONLY);
 
     int size = 0;
-    uint8_t* buf = vol.readFile(rkFileName, size);
-
-    rkFile.write(reinterpret_cast<char*>(buf), size);
-    if (rkFile.rdstate()) {
-        cout << "error writing file " << rkFileName << endl;
-        delete[] buf;
+    uint16_t start = 0;
+    uint8_t* buf = vol.readFile(rkFileName, size, start);
+    if ((size == 0) || (buf == nullptr)) {
+        cout << "The file size is zero " << rkFileName << endl;
         return false;
     }
-    rkFile.close();
-
+    // fix--
+    vector<uint8_t> body(size);
+    memcpy(body.data(), buf, size);
     delete[] buf;
+    // --fix
 
-    return true;
+    if (codePage >= CP_KOI8) {
+        body = decodeCP(body, codePage);
+    }
+
+    if (!extractToTape) {
+        ofstream rkFile(targetFileName, ios::binary | std::fstream::trunc);
+        if (!rkFile.is_open()) {
+            cout << "error opening file " << rkFileName << endl;
+            return false;
+        }
+        rkFile.write(reinterpret_cast<char*>(body.data()), body.size());
+        if (rkFile.rdstate()) {
+            cout << "error writing file " << rkFileName << endl;
+            return false;
+        }
+        rkFile.close();
+        return true;
+    } else {
+        return convertToRk(body, start, targetFileName);
+    }
 }
 
 
@@ -204,21 +383,24 @@ void formatImage(const string& imageFileName, int directorySize)
 
 int main(int argc, const char** argv)
 {
-    cout << "rkdisk v. " VERSION " (c) Viktor Pykhonin, 2024" << endl << endl;
     string moduleName = argv[0];
     moduleName = moduleName.substr(moduleName.find_last_of("/\\:") + 1);
 
     string imageFileName;
     string rkFileName;
     string targetFileName;
+    string cp_str;
 
     bool allowOverwrite = false;
     bool briefListing = false;
+    bool b2riefListing = false;
     bool readOnly = false;
     bool hidden = false;
     bool noConfirmation = false;
+    bool extractToTape = false;
     uint16_t startingAddr = 0;
     int directorySize = 4;
+    int codePage = -1;
 
     // parse command line
 
@@ -276,6 +458,12 @@ int main(int argc, const char** argv)
                 return 1;
             }
             briefListing = true;
+        } else if (option == "-b2") {
+            if (i > argc || command != "l") {
+                usage(moduleName);
+                return 1;
+            }
+            b2riefListing = true;
         } else if (option == "-y") {
             if (i > argc || command != "f") {
                 usage(moduleName);
@@ -294,6 +482,25 @@ int main(int argc, const char** argv)
                 return 1;
             }
             hidden = true;
+        } else if (option == "-t") {
+            if (i > argc || command != "x") {
+                usage(moduleName);
+                return 1;
+            }
+            extractToTape = true;
+        } else if (option == "-cp") {
+            if (++i > argc || command != "x") {
+                usage(moduleName);
+                return 1;
+            }
+            cp_str = argv[i];
+            if (strcmpi(cp_str, "KOI8-R")) codePage = CP_KOI8;
+            else if (strcmpi(cp_str, "CP1251")) codePage = CP_WIN1251;
+            else if (strcmpi(cp_str, "UTF-8")) codePage = CP_UTF8;
+            else {
+                usage(moduleName);
+                return 1;
+            }
         } else {
             if (option[0] == '-') {
                 cout << "Invalid option:" << option << endl << endl;
@@ -328,21 +535,27 @@ int main(int argc, const char** argv)
         return 1;
     }
 
+    if (!b2riefListing) {
+        showTitle();
+    }
+
     try {
 
         if (command == "l") {
             if (!rkFileName.empty()) {
                 cout << "Extra file name specified!" << endl << endl;
-                usage(moduleName);
+                usage(moduleName, b2riefListing);
                 return 1;
             }
-            cout << "Directory content for image " << imageFileName << ":" << endl << endl;
-            listFiles(imageFileName, briefListing);
+            if (!b2riefListing) {
+                cout << "Directory content for image " << imageFileName << ":" << endl << endl;
+            }
+            listFiles(imageFileName, briefListing? 1 : b2riefListing? 2 : 0);
             return 0;
         } else if (command == "f") {
             if (!targetFileName.empty()) {
                 cout << "Extra file name specified!" << endl << endl;
-                usage(moduleName);
+                usage(moduleName, b2riefListing);
                 return 1;
             }
             if (!noConfirmation) {
@@ -361,7 +574,7 @@ int main(int argc, const char** argv)
 
         if (rkFileName.empty()) {
             cout << "No rk file name specified!" << endl << endl;
-            usage(moduleName);
+            usage(moduleName, b2riefListing);
             return 1;
         }
 
@@ -369,12 +582,12 @@ int main(int argc, const char** argv)
             if (targetFileName.empty())
                 targetFileName = rkFileName;
             cout << "Extracting file " << rkFileName << " from image " << imageFileName << " to " << targetFileName << " ... ";
-            if (!extractFile(imageFileName, rkFileName, targetFileName))
+            if (!extractFile(imageFileName, rkFileName, targetFileName, extractToTape, codePage))
                 return 1;
         } else if (command == "a") {
             if (!targetFileName.empty()) {
                 cout << "Extra file name specified!" << endl << endl;
-                usage(moduleName);
+                usage(moduleName, b2riefListing);
                 return 1;
             }
             string rkFileNameWoPath = rkFileName.substr(rkFileName.find_last_of("/\\:") + 1);
@@ -386,7 +599,7 @@ int main(int argc, const char** argv)
         } else if (command == "d") {
             if (!targetFileName.empty()) {
                 cout << "Extra file name specified!" << endl << endl;
-                usage(moduleName);
+                usage(moduleName, b2riefListing);
                 return 1;
             }
             cout << "Deleting file " << rkFileName << " from image " << imageFileName << " ... ";
@@ -394,7 +607,7 @@ int main(int argc, const char** argv)
         } else if (command == "t") {
             if (!targetFileName.empty()) {
                 cout << "Extra file name specified!" << endl << endl;
-                usage(moduleName);
+                usage(moduleName, b2riefListing);
                 return 1;
             }
             cout << "Setting file attributes " << rkFileName << " from image " << imageFileName << " ... ";
@@ -419,7 +632,7 @@ int main(int argc, const char** argv)
             cout << "No more dir entries!" << endl;
             break;
         case RkVolume::RkVolumeException::RVET_BAD_DISK_FORMAT:
-            cout << "bad disk image!" << endl;
+            cout << "bad disk image! " << e.track << ", " << e.sector << endl;
             break;
         case RkVolume::RkVolumeException::RVET_NO_FILESYSTEM:
             cout << "no filesyetem on image!" << endl;
